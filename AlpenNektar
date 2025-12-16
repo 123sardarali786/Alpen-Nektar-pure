@@ -1,0 +1,268 @@
+tsx// 1. src/app/[lang]/layout.tsx
+import { dir } from 'i18n-rsc';
+import { ReactNode } from 'react';
+import { Cormorant_Garamond } from 'next/font/google';
+import localFont from 'next/font/local';
+import './globals.css';
+
+const cormorant = Cormorant_Garamond({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-cormorant',
+});
+
+const naskh = localFont({
+  src: '../../public/fonts/NotoNaskhArabic-Variable.ttf',
+  variable: '--font-naskh',
+});
+
+export default function RootLayout({
+  children,
+  params: { lang },
+}: {
+  children: ReactNode;
+  params: { lang: 'en' | 'de' | 'fr' | 'ar' };
+}) {
+  return (
+    <html lang={lang} dir={dir(lang)} className={`${cormorant.variable} ${naskh.variable}`}>
+      <body className="font-cormorant bg-[#0a0a0a] text-[#F5F0E6]">{children}</body>
+    </html>
+  );
+}
+tsx// 2. src/app/[lang]/(immersive)/layout.tsx
+'use client';
+
+import { ReactNode, Suspense } from 'react';
+import { Canvas } from '@react-three/fiber';
+import { Preload } from '@react-three/drei';
+import VideoBackground from '@/components/VideoBackground';
+import MagneticCursor from '@/components/Cursor';
+import HoneyJar from '@/components/HoneyJar';
+import Header from '@/components/Header';
+import AudioToggle from '@/components/AudioToggle';
+import Loading from './loading';
+
+export default function ImmersiveLayout({
+  children,
+  params: { lang },
+}: {
+  children: ReactNode;
+  params: { lang: 'en' | 'de' | 'fr' | 'ar' };
+}) {
+  const isArabic = lang === 'ar';
+
+  return (
+    <>
+      <VideoBackground />
+      <MagneticCursor color={isArabic ? '#065f46' : '#D4AF37'} />
+      <Suspense fallback={<Loading />}>
+        <Canvas
+          dpr={typeof window !== 'undefined' && window.innerWidth < 768 ? [1, 1.5] : [1, 2]}
+          gl={{ antialias: true, alpha: false }}
+          camera={{ position: [0, 0, 5], fov: 45 }}
+          style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 10 }}
+        >
+          <ambientLight intensity={0.5} />
+          <directionalLight position={[5, 5, 5]} intensity={1} />
+          <HoneyJar lang={lang} />
+          <Preload all />
+        </Canvas>
+      </Suspense>
+      <Header lang={lang} />
+      <AudioToggle />
+      {children}
+    </>
+  );
+}
+tsx// 3. src/components/Cursor.tsx
+'use client';
+
+import { motion, useMotionValue, useSpring } from 'framer-motion';
+import { useEffect, useState } from 'react';
+
+export default function MagneticCursor({ color = '#D4AF37' }) {
+  const cursorX = useMotionValue(0);
+  const cursorY = useMotionValue(0);
+  const springX = useSpring(cursorX, { stiffness: 500, damping: 28 });
+  const springY = useSpring(cursorY, { stiffness: 500, damping: 28 });
+  const [isHovering, setIsHovering] = useState(false);
+
+  useEffect(() => {
+    const moveCursor = (e: MouseEvent) => {
+      cursorX.set(e.clientX - 16);
+      cursorY.set(e.clientY - 16);
+    };
+    window.addEventListener('mousemove', moveCursor);
+    return () => window.removeEventListener('mousemove', moveCursor);
+  }, [cursorX, cursorY]);
+
+  useEffect(() => {
+    const elements = document.querySelectorAll('a, button, [data-magnetic]');
+    elements.forEach((el) => {
+      el.addEventListener('mouseenter', () => setIsHovering(true));
+      el.addEventListener('mouseleave', () => setIsHovering(false));
+    });
+  }, []);
+
+  return (
+    <>
+      <motion.div
+        className="fixed w-8 h-8 rounded-full pointer-events-none z-50 mix-blend-difference"
+        style={{
+          backgroundColor: color,
+          x: springX,
+          y: springY,
+          scale: isHovering ? 2 : 1,
+        }}
+      />
+      {/* Optional particle burst on click can be added with libraries like tsparticles */}
+    </>
+  );
+}
+glsl// 4. src/shaders/honey.frag
+uniform float time;
+uniform vec2 mouse;
+uniform float viscosity;
+varying vec2 vUv;
+varying vec3 vNormal;
+varying vec3 vPosition;
+
+void main() {
+  // Simple viscous honey-like refraction + thickness
+  vec3 refractColor = refract(vec3(0.0, 0.0, 1.0), normalize(vNormal), 1.0 / 1.33);
+  float fresnel = pow(1.0 - dot(normalize(vNormal), vec3(0.0, 0.0, 1.0)), 3.0);
+  vec3 honeyColor = vec3(0.83, 0.69, 0.22); // #D4AF37 gold-honey
+  vec3 thick = mix(honeyColor * 0.8, honeyColor * 1.5, viscosity);
+
+  // Slosh effect
+  float slosh = sin(vPosition.y * 3.0 + time * 0.5 + mouse.x * 2.0) * 0.05;
+
+  gl_FragColor = vec4(mix(thick + slosh, refractColor + honeyColor, fresnel), 0.92);
+}
+tsx// src/components/HoneyJar.tsx
+'use client';
+
+import { useGLTF, shaderMaterial } from '@react-three/drei';
+import { extend, useFrame, useThree } from '@react-three/fiber';
+import { useEffect, useRef } from 'react';
+import * as THREE from 'three';
+import honeyFrag from '@/shaders/honey.frag';
+
+const HoneyMaterial = shaderMaterial(
+  { time: 0, mouse: new THREE.Vector2(), viscosity: 1.0 },
+  /* vertex */ `
+    varying vec2 vUv;
+    varying vec3 vNormal;
+    varying vec3 vPosition;
+    void main() {
+      vUv = uv;
+      vNormal = normal;
+      vPosition = position;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  honeyFrag
+);
+
+extend({ HoneyMaterial });
+
+export default function HoneyJar({ lang }: { lang: string }) {
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+  const { nodes, materials } = useGLTF(isMobile ? '/jar-low.glb' : '/jar-high.glb');
+  const ref = useRef<THREE.Group>(null);
+  const materialRef = useRef<any>(null);
+  const { mouse, viewport } = useThree();
+
+  useFrame((state) => {
+    if (materialRef.current) {
+      materialRef.current.time = state.clock.elapsedTime;
+      materialRef.current.mouse.set(mouse.x * viewport.width * 0.1, mouse.y * viewport.height * 0.1);
+    }
+    if (ref.current) {
+      ref.current.rotation.y += 0.001;
+    }
+  });
+
+  // Device orientation slosh
+  useEffect(() => {
+    const handleOrientation = (e: DeviceOrientationEvent) => {
+      if (materialRef.current && e.beta && e.gamma) {
+        materialRef.current.mouse.set((e.gamma / 90) * 0.5, (e.beta / 90) * 0.5);
+      }
+    };
+    window.addEventListener('deviceorientation', handleOrientation);
+    return () => window.removeEventListener('deviceorientation', handleOrientation);
+  }, []);
+
+  return (
+    <group ref={ref} position={[0, 0, 0]} scale={1.5}>
+      {/* Assume jar model has a mesh named 'Honey' for liquid */}
+      <mesh geometry={(nodes.Honey as THREE.Mesh).geometry}>
+        <honeyMaterial ref={materialRef} transparent />
+      </mesh>
+      <mesh geometry={(nodes.Glass as THREE.Mesh).geometry} material={materials.Glass} />
+    </group>
+  );
+}
+tsx// 5. src/components/BankerVault.tsx (Modal)
+'use client';
+
+import { motion } from 'framer-motion';
+import { X } from 'lucide-react';
+
+const vaultVariants = {
+  closed: { rotateY: 0 },
+  open: { rotateY: -120, transition: { duration: 3, ease: 'easeInOut' } },
+};
+
+export default function BankerVault({ onClose }: { onClose: () => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/90"
+    >
+      <motion.div
+        variants={vaultVariants}
+        initial="closed"
+        animate="open"
+        className="relative w-full max-w-4xl aspect-video bg-gradient-to-b from-gray-900 to-black rounded-lg overflow-hidden perspective-1000"
+        style={{ transformStyle: 'preserve-3d' }}
+      >
+        {/* Vault door texture/image placeholder */}
+        <div className="absolute inset-0 bg-[url('/vault-door.jpg')] bg-cover" />
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-center text-[#D4AF37]">
+          <h2 className="text-5xl font-bold mb-8">Your Private Banker will contact you within 60 minutes</h2>
+          <a href="tel:+41445888888" className="text-4xl underline">
+            +41 44 588 88 88
+          </a>
+        </div>
+      </motion.div>
+      <button onClick={onClose} className="absolute top-8 right-8 text-white">
+        <X size={48} />
+      </button>
+    </motion.div>
+  );
+}
+TypeScript// 6. src/lib/i18n.ts
+export const locales = ['en', 'de', 'fr', 'ar'] as const;
+export type Locale = (typeof locales)[number];
+
+export const defaultLocale: Locale = 'en';
+
+export async function getDictionary(lang: Locale) {
+  return (await import(`@/translations/${lang}.json`)).default;
+}
+
+// Sample translations/en.json (create similar for de/fr/ar)
+{
+  "title": "AlpenNektar — The Sovereign Reserve",
+  "scarcity": "Available Jars: {count}/77",
+  "reserve": "Reserve Your Jar",
+  "contact": "Contact",
+  "provenance": "Provenance",
+  "only77": "Only 77 jars crafted since 1924"
+}
+
+// For Arabic RTL, add dir: 'rtl' handling in layout and emerald color swap via CSS variables.
